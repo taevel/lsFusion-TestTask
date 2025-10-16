@@ -1,0 +1,215 @@
+MODULE HockeyStats;
+
+REQUIRE System, Time;
+
+//  КОМАНДЫ 
+CLASS Team 'Команда';
+name 'Название' = DATA ISTRING[30](Team) IN id;
+
+FORM team 'Команда'
+    OBJECTS t = Team PANEL
+    PROPERTIES(t) name
+    EDIT Team OBJECT t
+;
+
+FORM teams 'Команды'
+    OBJECTS t = Team
+    PROPERTIES(t) READONLY name
+    PROPERTIES(t) NEWSESSION NEW, EDIT, DELETE
+;
+
+FORM dialogTeams 'Выбор команды'
+    OBJECTS t = Team
+    PROPERTIES(t) READONLY name
+    LIST Team OBJECT t
+;
+
+//  ИГРОКИ 
+CLASS Player 'Игрок';
+firstName 'Имя' = DATA ISTRING[30](Player);
+lastName 'Фамилия' = DATA ISTRING[30](Player);
+team 'Команда' = DATA Team(Player);
+nameTeam 'Команда' (Player p) = name(team(p));
+
+fullName 'Полное имя' (Player p) = CONCAT ' ', firstName(p), lastName(p);
+
+FORM player 'Игрок'
+    OBJECTS p = Player PANEL
+    PROPERTIES(p) firstName, lastName, nameTeam
+    EDIT Player OBJECT p
+;
+
+FORM players 'Игроки'
+    OBJECTS p = Player
+    PROPERTIES(p) READONLY firstName, lastName, nameTeam
+    PROPERTIES(p) NEWSESSION NEW, EDIT, DELETE
+;
+
+FORM dialogPlayers 'Выбор игрока'
+    OBJECTS p = Player
+    PROPERTIES(p) READONLY fullName, nameTeam
+    LIST Player OBJECT p
+;
+
+// МАТЧИ 
+CLASS Game 'Матч';
+
+date 'Дата' = DATA DATE (Game);
+hostTeam = DATA Team (Game);
+guestTeam = DATA Team (Game);
+hostGoals 'Х голы' = DATA INTEGER (Game);
+guestGoals 'Г голы' = DATA INTEGER (Game);
+
+CONSTRAINT hostTeam(Game team) = guestTeam(team) CHECKED BY hostTeam, guestTeam MESSAGE 'Команда хозяев и гостей не должны совпадать';
+
+hostTeamName 'Хозяева' (Game game) = name(hostTeam(game));
+guestTeamName 'Гости' (Game game) = name(guestTeam(game));
+
+FORM game 'Матч'
+    OBJECTS game = Game PANEL
+    PROPERTIES(game) date, hostTeamName, guestTeamName, hostGoals, guestGoals
+    EDIT Game OBJECT game
+;
+
+FORM games 'Матчи'
+    OBJECTS game = Game
+    PROPERTIES(game) READONLY date, hostTeamName, guestTeamName, hostGoals, guestGoals
+    PROPERTIES(game) NEWSESSION NEW, EDIT, DELETE
+;
+
+// ============ ГОЛЫ ============
+CLASS Goal 'Гол';
+game = DATA Game(Goal) NONULL DELETE;
+player 'Игрок' = DATA Player(Goal);
+minute 'Минута' = DATA INTEGER(Goal);
+
+playerName 'Игрок' (Goal g) = fullName(player(g));
+playerTeam 'Команда игрока' (Goal g) = team(player(g));
+
+// Ограничение: игрок должен принадлежать одной из команд, участвующих в матче
+CONSTRAINT player(Goal g) AND NOT (playerTeam(g) = hostTeam(game(g)) OR playerTeam(g) = guestTeam(game(g)))
+    CHECKED BY player MESSAGE 'Игрок должен принадлежать одной из команд, участвующих в матче';
+
+date 'Дата' (Goal g) = date(game(g));
+
+FORM goal 'Гол'
+    OBJECTS g = Goal PANEL
+    PROPERTIES(g) playerName, minute
+    EDIT Goal OBJECT g
+;
+
+// Добавляем голы в форму матча
+EXTEND FORM game
+    OBJECTS g = Goal
+    PROPERTIES(g) playerName, minute, NEW, DELETE
+    FILTERS game(g) = game
+;
+
+EXTEND FORM games
+    OBJECTS g = Goal
+    PROPERTIES(g) READONLY date, playerName, minute
+;
+
+//  РЕЗУЛЬТАТЫ
+won 'П' = DATA INTEGER (Team);
+lost 'П' = DATA INTEGER (Team);
+drawn 'Н' = DATA INTEGER (Team);
+
+goalsScored 'Забито' = DATA INTEGER (Team);
+goalsConceded 'Пропущено' = DATA INTEGER (Team);
+
+points 'Очки' (Team team) = won(team) * 3 + drawn(team);
+
+gamesPlayed 'Игр' (Team team) = won(team) + drawn(team) + lost(team);
+
+goalDifference 'Разница' (Team team) = goalsScored(team) (-) goalsConceded(team);
+
+// ТАБЛИЦА БОМБАРДИРОВ 
+countGoals 'Голов' (Player p) = GROUP SUM 1 IF player(Goal g) = p;
+
+// РАСЧЁТ РЕЗУЛЬТАТОВ 
+recalculateStats 'Пересчитать статистику' () {
+    // Очищаем статистику
+    won(Team t) <- 0;
+    lost(Team t) <- 0;
+    drawn(Team t) <- 0;
+    goalsScored(Team t) <- 0;
+    goalsConceded(Team t) <- 0;
+
+    // Подсчитываем по матчам
+    FOR Game gm IS Game DO {
+        LOCAL hostG = INTEGER();
+        LOCAL guestG = INTEGER();
+
+        hostG() <- hostGoals(gm);
+        guestG() <- guestGoals(gm);
+
+        IF hostG() > guestG() THEN {
+            won(Team t) <- won(t) + 1 WHERE t = hostTeam(gm);
+            lost(Team t) <- lost(t) + 1 WHERE t = guestTeam(gm);
+        } ELSE IF hostG() < guestG() THEN {
+            lost(Team t) <- lost(t) + 1 WHERE t = hostTeam(gm);
+            won(Team t) <- won(t) + 1 WHERE t = guestTeam(gm);
+        } ELSE {
+            drawn(Team t) <- drawn(t) + 1 WHERE t = hostTeam(gm) OR t = guestTeam(gm);
+        }
+
+        goalsScored(Team t) <- goalsScored(t) + hostG() WHERE t = hostTeam(gm);
+        goalsScored(Team t) <- goalsScored(t) + guestG() WHERE t = guestTeam(gm);
+
+        goalsConceded(Team t) <- goalsConceded(t) + guestG() WHERE t = hostTeam(gm);
+        goalsConceded(Team t) <- goalsConceded(t) + hostG() WHERE t = guestTeam(gm);
+    }
+}
+
+//  ГЛАВНАЯ ФОРМА 
+FORM MainForm 'Турнирная таблица'
+    OBJECTS game = Game
+    PROPERTIES(game) READONLY date, hostTeamName, guestTeamName, hostGoals, guestGoals
+    PROPERTIES(game) NEWSESSION NEW, EDIT, DELETE
+    PROPERTIES() recalculateStats TOOLBAR
+    ORDERS date(game) DESC
+
+    OBJECTS team = Team
+    PROPERTIES(team) READONLY name, gamesPlayed, won, drawn, lost, goalsScored, goalsConceded, goalDifference, points
+    ORDERS points(team) DESC, goalDifference(team) DESC, goalsScored(team) DESC, name(team)
+
+    OBJECTS player = Player
+    PROPERTIES(player) READONLY fullName, nameTeam, countGoals
+    ORDERS countGoals(player) DESC, fullName(player)
+    FILTERS countGoals(player)
+;
+
+DESIGN MainForm {
+    OBJECTS {
+        NEW mainContainer {
+            fill = 1;
+            tabbed = TRUE;
+
+            NEW gamesTab {
+                caption = 'Матчи';
+                MOVE BOX(game);
+            }
+
+            NEW standingsTab {
+                caption = 'Турнирная таблица';
+                MOVE BOX(team);
+            }
+
+            NEW scorersTab {
+                caption = 'Бомбардиры';
+                MOVE BOX(player);
+            }
+        }
+    }
+}
+
+// НАВИГАТОР 
+NAVIGATOR {
+    NEW FOLDER tournament 'Турнир' {
+        NEW MainForm;
+        NEW games;
+        NEW teams;
+        NEW players;
+    }
+}
